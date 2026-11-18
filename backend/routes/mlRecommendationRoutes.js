@@ -22,6 +22,7 @@ import {
 } from '../controller/mlRecommendationController.js';
 import isAuth from '../middleware/isAuth.js';
 import adminAuth from '../middleware/adminAuth.js';
+import { bindUserId, selfOnly } from '../middleware/bindUser.js';
 
 const mlRecommendationRoutes = express.Router();
 
@@ -32,7 +33,7 @@ const mlRecommendationRoutes = express.Router();
  * Get personalized recommendations for authenticated user
  * Query params: strategy (hybrid|content|collaborative|trending|category|rating|review-cf), limit
  */
-mlRecommendationRoutes.post('/recommendations', getMLRecommendations);
+mlRecommendationRoutes.post('/recommendations', isAuth, bindUserId, getMLRecommendations);
 
 /**
  * GET /api/ml/similar/:productId
@@ -60,14 +61,14 @@ mlRecommendationRoutes.post('/cold-start', getColdStartRecommendations);
  * Get recommendations based on product ratings
  * Query params: limit
  */
-mlRecommendationRoutes.post('/rating-based', getRatingBasedRecommendations);
+mlRecommendationRoutes.post('/rating-based', isAuth, bindUserId, getRatingBasedRecommendations);
 
 /**
  * POST /api/ml/review-based
  * Get recommendations based on review-based collaborative filtering
  * Query params: limit
  */
-mlRecommendationRoutes.post('/review-based', getReviewBasedRecommendations);
+mlRecommendationRoutes.post('/review-based', isAuth, bindUserId, getReviewBasedRecommendations);
 
 /**
  * GET /api/ml/strategies
@@ -82,49 +83,49 @@ mlRecommendationRoutes.get('/strategies', getAvailableStrategies);
  * Track product view event
  * Body: { userId, productId, referrer, referrerType, sessionId, deviceInfo }
  */
-mlRecommendationRoutes.post('/track/view', trackProductView);
+mlRecommendationRoutes.post('/track/view', isAuth, bindUserId, trackProductView);
 
 /**
  * POST /api/ml/track/search
  * Track search query
  * Body: { userId, query, filters, sortBy, resultsCount, sessionId }
  */
-mlRecommendationRoutes.post('/track/search', trackSearch);
+mlRecommendationRoutes.post('/track/search', isAuth, bindUserId, trackSearch);
 
 /**
  * POST /api/ml/track/add-to-cart
  * Track add to cart event
  * Body: { userId, productId, quantity, size, referrer, referrerType, sessionId }
  */
-mlRecommendationRoutes.post('/track/add-to-cart', trackAddToCart);
+mlRecommendationRoutes.post('/track/add-to-cart', isAuth, bindUserId, trackAddToCart);
 
 /**
  * POST /api/ml/track/purchase
  * Track purchase event
  * Body: { userId, products, totalAmount, paymentMethod, couponUsed, sessionId }
  */
-mlRecommendationRoutes.post('/track/purchase', trackPurchase);
+mlRecommendationRoutes.post('/track/purchase', isAuth, bindUserId, trackPurchase);
 
 /**
  * POST /api/ml/track/recommendation-click
  * Track recommendation click
  * Body: { userId, productId, recommendationType, recommendationPosition, recommendationScore, sessionId }
  */
-mlRecommendationRoutes.post('/track/recommendation-click', trackRecommendationClick);
+mlRecommendationRoutes.post('/track/recommendation-click', isAuth, bindUserId, trackRecommendationClick);
 
 /**
  * POST /api/ml/track/time-on-page
  * Track time spent on product page
  * Body: { userId, productId, dwellTime, scrollDepth, imagesViewed, reviewsViewed, sessionId }
  */
-mlRecommendationRoutes.post('/track/time-on-page', trackTimeOnPage);
+mlRecommendationRoutes.post('/track/time-on-page', isAuth, bindUserId, trackTimeOnPage);
 
 /**
  * POST /api/ml/track/session-start
  * Track session start
  * Body: { userId, deviceInfo, referrer }
  */
-mlRecommendationRoutes.post('/track/session-start', trackSessionStart);
+mlRecommendationRoutes.post('/track/session-start', isAuth, bindUserId, trackSessionStart);
 
 // ================== ANALYTICS ENDPOINTS ==================
 
@@ -133,20 +134,20 @@ mlRecommendationRoutes.post('/track/session-start', trackSessionStart);
  * Get user analytics and profile
  * Query params: days (default 30)
  */
-mlRecommendationRoutes.get('/analytics/user/:userId', getUserAnalytics);
+mlRecommendationRoutes.get('/analytics/user/:userId', isAuth, selfOnly, getUserAnalytics);
 
 /**
  * GET /api/ml/analytics/product/:productId
  * Get product analytics
  * Query params: days (default 30)
  */
-mlRecommendationRoutes.get('/analytics/product/:productId', getProductAnalytics);
+mlRecommendationRoutes.get('/analytics/product/:productId', isAuth, getProductAnalytics);
 
 /**
  * GET /api/ml/analytics/overview
  * Get recommendation system overview stats (admin only)
  */
-mlRecommendationRoutes.get('/analytics/overview', getSystemOverview);
+mlRecommendationRoutes.get('/analytics/overview', adminAuth, getSystemOverview);
 
 // ================== ADMIN ENDPOINTS ==================
 
@@ -155,13 +156,13 @@ mlRecommendationRoutes.get('/analytics/overview', getSystemOverview);
  * Clear recommendation cache (admin only)
  * Body: { userId, strategy, all }
  */
-mlRecommendationRoutes.post('/cache/clear', clearCache);
+mlRecommendationRoutes.post('/cache/clear', adminAuth, clearCache);
 
 /**
  * POST /api/ml/recompute
  * Force recompute recommendations for a user
  * Body: { userId, strategy }
  */
-mlRecommendationRoutes.post('/recompute', forceRecompute);
+mlRecommendationRoutes.post('/recompute', adminAuth, forceRecompute);
 
 export default mlRecommendationRoutes;

@@ -9,14 +9,19 @@ export const validateCoupon = async (req, res) => {
     throw new AppError("code and amount are required", 400);
   }
 
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount < 0) {
+    throw new AppError("amount must be a non-negative number", 400);
+  }
+
   try {
-    const { discount } = await validateAndComputeDiscount({ code, userId: req.userId, amount });
+    const { discount } = await validateAndComputeDiscount({ code, userId: req.userId, amount: numericAmount });
 
     return res.status(200).json({
       message: "Coupon applied",
       code: code.trim().toUpperCase(),
       discount,
-      finalAmount: Math.max(amount - discount, 0)
+      finalAmount: Math.max(numericAmount - discount, 0)
     });
   } catch (error) {
     // Invalid/expired/already-used coupon is a client-facing 400, not a server error

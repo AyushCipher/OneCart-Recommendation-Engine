@@ -47,8 +47,9 @@ function Login() {
             let user = response.user
             let name = user.displayName;
             let email = user.email
+            const idToken = await user.getIdToken()
 
-            const result = await axios.post(serverUrl + "/api/auth/googlelogin", { name, email }, { withCredentials: true })
+            const result = await axios.post(serverUrl + "/api/auth/googlelogin", { idToken, name, email }, { withCredentials: true })
             getCurrentUser()
             navigate("/")
             toast.success("Google Login Successful")

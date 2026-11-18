@@ -12,7 +12,8 @@ const userSchema = new mongoose.Schema({
     unique: true
   },
   password: {
-    type: String
+    type: String,
+    select: false // never returned by default; use .select("+password") to compare
   },
   gender: {
     type: String,
@@ -83,10 +84,12 @@ const userSchema = new mongoose.Schema({
     }
   },
   resetOtp: {
-    type: String
+    type: String,
+    select: false
   },
   otpExpires: {
-    type: Date
+    type: Date,
+    select: false
   },
   isOtpVerifed: {
     type: Boolean,

@@ -5,12 +5,12 @@ import adminAuth from "../middleware/adminAuth.js"
 
 let productRoutes = express.Router()
 
-productRoutes.post("/addproduct", upload.fields([
+productRoutes.post("/addproduct", adminAuth, upload.fields([
     { name: "image1", maxCount: 1 },
     { name: "image2", maxCount: 1 },
     { name: "image3", maxCount: 1 },
     { name: "image4", maxCount: 1 }
-]), adminAuth, addProduct)
+]), addProduct)
 
 // FIX: /list must be before /:id — otherwise "list" gets treated as an id param
 productRoutes.get("/list", listProduct)

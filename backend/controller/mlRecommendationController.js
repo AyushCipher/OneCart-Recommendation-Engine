@@ -872,6 +872,11 @@ export const clearCache = async (req, res) => {
       query.userId = userId;
     } else if (strategy) {
       query.strategy = strategy;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Provide userId, strategy, or all: true"
+      });
     }
 
     const result = await RecommendationCache.deleteMany(query);

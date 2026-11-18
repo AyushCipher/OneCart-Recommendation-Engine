@@ -19,3 +19,13 @@ export const otpLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many OTP requests. Please try again in 15 minutes.' },
 })
+
+// Password reset is the final step of the OTP flow; throttle it so a
+// verified-OTP window can't be hammered.
+export const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many password reset attempts. Please try again in 15 minutes.' },
+})

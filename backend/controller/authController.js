@@ -7,7 +7,7 @@ export const adminLogin = async (req, res) => {
       password === process.env.ADMIN_PASSWORD
     ) {
       // Generate a JWT token for admin
-      const token = genToken(email); // or use a static id, e.g., "admin"
+      const token = genToken1(email); // { email } claim, checked by adminAuth
       res.cookie("token", token, {
         httpOnly: true,
         secure: true,
@@ -25,8 +25,19 @@ export const adminLogin = async (req, res) => {
 import User from "../model/userModel.js";
 import validator from "validator";
 import bcrypt from "bcryptjs";
-import { genToken } from "../config/token.js";
+import { genToken, genToken1 } from "../config/token.js";
+import { verifyFirebaseIdToken, isFirebaseConfigured } from "../config/firebaseAdmin.js";
+import crypto from "crypto";
 import sendMail from "../config/Mail.js";
+
+// Never send the password hash / OTP fields to the client.
+const toSafeUser = (user) => {
+  const obj = user.toObject ? user.toObject() : { ...user };
+  delete obj.password;
+  delete obj.resetOtp;
+  delete obj.otpExpires;
+  return obj;
+};
 
 // COMMON COOKIE OPTIONS
 const cookieConfig = {
@@ -64,7 +75,7 @@ export const registration = async (req, res) => {
       dateOfBirth: dateOfBirth || null,
       profession: profession || "",
       bio: bio || "",
-      isOtpVerifed: true,
+      isOtpVerifed: false,
     });
 
     const token = genToken(user._id);
@@ -73,7 +84,7 @@ export const registration = async (req, res) => {
 
     return res.status(201).json({
       message: "Registration Successful",
-      user,
+      user: toSafeUser(user),
     });
 
   } catch (err) {
@@ -86,11 +97,12 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ email }).select("+password");
 
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    let isMatch = await bcrypt.compare(password, user.password);
+    // Google-created accounts have no password
+    let isMatch = user.password ? await bcrypt.compare(password, user.password) : false;
     if (!isMatch)
       return res.status(400).json({ message: "Incorrect Password" });
 
@@ -100,7 +112,7 @@ export const login = async (req, res) => {
 
     return res.status(200).json({
       message: "Login Successful",
-      user,
+      user: toSafeUser(user),
     });
 
   } catch (err) {
@@ -117,7 +129,7 @@ export const sendOtp = async (req, res) => {
     let user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: "User Not Found" });
 
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const otp = crypto.randomInt(1000, 10000).toString();
 
     user.resetOtp = otp;
     user.otpExpires = Date.now() + 5 * 60 * 1000;
@@ -138,9 +150,9 @@ export const verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select("+resetOtp +otpExpires");
 
-    if (!user || user.resetOtp !== otp || user.otpExpires < Date.now())
+    if (!user || !user.resetOtp || user.resetOtp !== otp || user.otpExpires < Date.now())
       return res.status(400).json({ message: "Invalid or Expired OTP" });
 
     user.isOtpVerifed = true;
@@ -152,7 +164,7 @@ export const verifyOtp = async (req, res) => {
 
     res.cookie("token", token, cookieConfig);
 
-    return res.status(200).json({ message: "OTP Verified", user });
+    return res.status(200).json({ message: "OTP Verified", user: toSafeUser(user) });
 
   } catch (err) {
     return res.status(500).json({ message: `OTP Error: ${err.message}` });
@@ -171,7 +183,7 @@ export const resetPassword = async (req, res) => {
     const hashedPass = await bcrypt.hash(password, 10);
 
     user.password = hashedPass;
-    user.isOtpVerifed = true;
+    user.isOtpVerifed = false; // one OTP verification = one reset
     user.resetOtp = undefined;
     user.otpExpires = undefined;
 
@@ -187,16 +199,34 @@ export const resetPassword = async (req, res) => {
 // ======================== GOOGLE LOGIN ========================
 export const googleLogin = async (req, res) => {
   try {
-    const { name, email } = req.body;
+    // Fail closed: without Firebase admin credentials we cannot trust any identity claim.
+    if (!isFirebaseConfigured()) {
+      return res.status(503).json({ message: "Google login is not configured" });
+    }
+
+    const { idToken, name } = req.body;
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(idToken);
+    } catch (err) {
+      return res.status(401).json({ message: "Invalid Google token" });
+    }
+
+    // Identity comes from the verified token, never from the request body.
+    const email = decoded?.email;
+    if (!email || decoded.email_verified === false) {
+      return res.status(401).json({ message: "Google account email is not verified" });
+    }
 
     let user = await User.findOne({ email });
 
     if (!user) {
       user = await User.create({
-        name,
+        name: decoded.name || name || email.split("@")[0],
         email,
         password: "",
-        isOtpVerifed: true,
+        isOtpVerifed: false,
       });
     }
 
@@ -206,7 +236,7 @@ export const googleLogin = async (req, res) => {
 
     return res.status(200).json({
       message: "Google Login Successful",
-      user
+      user: toSafeUser(user)
     });
 
   } catch (err) {

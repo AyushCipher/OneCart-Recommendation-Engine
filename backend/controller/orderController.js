@@ -6,31 +6,43 @@ import { validateAndComputeDiscount, redeemCoupon } from "../services/couponServ
 import AppError from "../utils/AppError.js";
 import razorpay from 'razorpay'
 import dotenv from 'dotenv'
-import axios from 'axios';
+import crypto from 'crypto'
+import { recordPurchase } from '../services/purchaseTracker.js'
 dotenv.config()
 
 const currency = 'inr'
 const DELIVERY_FEE = 40; // keep in sync with frontend/src/context/ShopContext.jsx delivery_fee
 
-const razorpayInstance = new razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
-})
-
-/**
- * Helper function to track product purchases for recommendations
- */
-const trackPurchase = async (userId, items) => {
-    try {
-        const productIds = items.map(item => item._id || item.productId);
-        await axios.post('http://localhost:8000/api/recommendations/track-purchase', {
-            userId,
-            productIds
-        }).catch(err => console.log('Purchase tracking failed:', err.message));
-    } catch (error) {
-        console.log('Error tracking purchase:', error.message);
+// Created lazily so the module can be imported without Razorpay credentials
+// (e.g. in tests); the key pair is only needed when a payment route is hit.
+let razorpayInstance
+const getRazorpay = () => {
+    if (!razorpayInstance) {
+        razorpayInstance = new razorpay({
+            key_id: process.env.RAZORPAY_KEY_ID,
+            key_secret: process.env.RAZORPAY_KEY_SECRET
+        })
     }
+    return razorpayInstance
+}
+
+// Fire-and-forget purchase tracking for the recommender (called directly,
+// not over HTTP). Must only be called for orders that are actually confirmed.
+const trackPurchase = (userId, items) => {
+    const productIds = items.map(item => item._id || item.productId);
+    recordPurchase(userId, productIds)
+        .catch(err => console.log('Purchase tracking failed:', err.message));
 };
+
+// Razorpay signs "<order_id>|<payment_id>" with the key secret (HMAC-SHA256).
+export const isValidRazorpaySignature = (orderId, paymentId, signature) => {
+    const secret = process.env.RAZORPAY_KEY_SECRET
+    if (!secret || typeof signature !== 'string') return false
+    const expected = crypto.createHmac('sha256', secret).update(`${orderId}|${paymentId}`).digest('hex')
+    const a = Buffer.from(expected)
+    const b = Buffer.from(signature)
+    return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
 
 // Recomputes the order total from persisted product prices and returns
 // price-corrected line items. The client's submitted amount/price is never
@@ -94,10 +106,13 @@ export const placeOrder = async (req, res) => {
         date: Date.now()
     }
 
+    // Atomically claim the coupon first: a concurrent second order loses here.
+    if (appliedCoupon && !(await redeemCoupon(appliedCoupon._id, userId))) {
+        throw new AppError('This coupon can no longer be used', 400)
+    }
+
     const newOrder = new Order(orderData)
     await newOrder.save()
-
-    if (appliedCoupon) await redeemCoupon(appliedCoupon._id, userId);
 
     await User.findByIdAndUpdate(userId, { cartData: {} })
 
@@ -140,8 +155,8 @@ export const placeOrderRazorpay = async (req, res) => {
     const newOrder = new Order(orderData)
     await newOrder.save()
 
-    // Track purchase for recommendations
-    trackPurchase(userId, sanitizedItems);
+    // Purchase tracking / coupon redemption / cart clearing happen in
+    // verifyRazorpay, only once the payment signature has been verified.
 
     const options = {
         amount: Math.round(finalAmount * 100),
@@ -150,7 +165,9 @@ export const placeOrderRazorpay = async (req, res) => {
     }
 
     try {
-        const order = await razorpayInstance.orders.create(options);
+        const order = await getRazorpay().orders.create(options);
+        newOrder.razorpayOrderId = order.id
+        await newOrder.save()
         return res.status(200).json(order);
     } catch (err) {
         console.error('Razorpay Order Error:', err);
@@ -161,22 +178,32 @@ export const placeOrderRazorpay = async (req, res) => {
 
 export const verifyRazorpay = async (req, res) => {
     const userId = req.userId
-    const { razorpay_order_id } = req.body
-    const orderInfo = await razorpayInstance.orders.fetch(razorpay_order_id)
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body
 
-    if (orderInfo.status === 'paid') {
-        const paidOrder = await Order.findByIdAndUpdate(orderInfo.receipt, { payment: true });
-
-        if (paidOrder?.couponCode) {
-            const coupon = await Coupon.findOne({ code: paidOrder.couponCode });
-            if (coupon) await redeemCoupon(coupon._id, userId);
-        }
-
-        await User.findByIdAndUpdate(userId, { cartData: {} })
-        return res.status(200).json({ message: 'Payment Successful' })
+    if (!isValidRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+        throw new AppError('Invalid payment signature', 400)
     }
 
-    return res.json({ message: 'Payment Failed' })
+    // The order must belong to the caller
+    const order = await Order.findOne({ razorpayOrderId: razorpay_order_id, userId: userId.toString() })
+    if (!order) throw new AppError('Order not found', 404)
+
+    // Atomic unpaid -> paid transition so a replayed verify can't double-apply side effects
+    const paidOrder = await Order.findOneAndUpdate(
+        { _id: order._id, payment: false },
+        { payment: true }
+    )
+    if (!paidOrder) return res.status(200).json({ message: 'Payment Successful' })
+
+    if (paidOrder.couponCode) {
+        const coupon = await Coupon.findOne({ code: paidOrder.couponCode })
+        if (coupon) await redeemCoupon(coupon._id, userId)
+    }
+
+    await User.findByIdAndUpdate(userId, { cartData: {} })
+    trackPurchase(userId, paidOrder.items)
+
+    return res.status(200).json({ message: 'Payment Successful' })
 }
 
 export const userOrders = async (req, res) => {

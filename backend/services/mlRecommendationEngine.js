@@ -11,6 +11,11 @@ import {
 } from "../model/mlModels.js";
 import { RECOMMENDATION_CONFIG } from "../config/recommendationConfig.js";
 
+// Bounds on per-request DB reads / scoring work
+const CO_OCCURRENCE_USER_LIMIT = 200;
+const CONTENT_HISTORY_LIMIT = 30;
+const CONTENT_CANDIDATE_LIMIT = 500;
+
 /**
  * Advanced ML Recommendation Engine
  * Production-ready implementation with:
@@ -130,17 +135,20 @@ class MLRecommendationEngine {
   static async getContentBasedRecommendations(userId, limit = 10) {
     try {
       // Get user's interaction history
-      const userProfile = await UserProfile.findOne({ userId });
-      const user = await User.findById(userId);
+      const [userProfile, user] = await Promise.all([
+        UserProfile.findOne({ userId }).lean(),
+        User.findById(userId).lean()
+      ]);
       
       if (!user && !userProfile) {
         return { products: [], strategy: 'content', coldStart: true };
       }
 
-      // Get products user has interacted with
+      // Get products user has interacted with (cap to keep the O(candidates x history) scoring bounded)
       const viewedIds = user?.viewedProducts?.map(v => v.productId) || [];
       const purchasedIds = user?.purchasedProducts?.map(p => p.productId) || [];
-      const interactedIds = [...new Set([...viewedIds, ...purchasedIds])];
+      const interactedIds = [...new Set([...viewedIds, ...purchasedIds].map(String))]
+        .slice(0, CONTENT_HISTORY_LIMIT);
 
       if (interactedIds.length === 0) {
         return { products: [], strategy: 'content', coldStart: true };
@@ -158,7 +166,7 @@ class MLRecommendationEngine {
       // Get all candidate products
       const candidateProducts = await Product.find({
         _id: { $nin: interactedIds }
-      }).lean();
+      }).limit(CONTENT_CANDIDATE_LIMIT).lean();
 
       // Calculate IDF for text similarity
       const allProducts = [...interactedProducts, ...candidateProducts];
@@ -296,7 +304,10 @@ class MLRecommendationEngine {
           { 'purchasedProducts.productId': { $in: userPurchasedIds } },
           { 'viewedProducts.productId': { $in: userViewedIds } }
         ]
-      }).limit(100);
+      })
+        .select('purchasedProducts.productId viewedProducts.productId')
+        .limit(100)
+        .lean();
 
       // Calculate similarity scores for each user
       const userSimilarities = allUsers.map(otherUser => {
@@ -427,53 +438,59 @@ class MLRecommendationEngine {
         return { products: [], strategy: 'item-item', coldStart: true };
       }
 
-      // Find co-occurrence patterns
+      // Find co-occurrence patterns with ONE query for all recent interactions
+      // (previously one query per product). Each co-user's contribution is
+      // weighted by how many of the user's recent items they also touched.
       const coOccurrenceScores = new Map();
+      const recentIdStrings = new Set(recentInteractions.map(id => id.toString()));
 
-      for (const productId of recentInteractions) {
-        // Find users who interacted with this product
-        const usersWhoInteracted = await User.find({
-          _id: { $ne: userId },
-          $or: [
-            { 'viewedProducts.productId': productId },
-            { 'purchasedProducts.productId': productId }
-          ]
-        }).limit(50);
+      const usersWhoInteracted = await User.find({
+        _id: { $ne: userId },
+        $or: [
+          { 'viewedProducts.productId': { $in: recentInteractions } },
+          { 'purchasedProducts.productId': { $in: recentInteractions } }
+        ]
+      })
+        .select('viewedProducts.productId purchasedProducts.productId')
+        .limit(CO_OCCURRENCE_USER_LIMIT)
+        .lean();
 
-        // Count what else they interacted with
-        usersWhoInteracted.forEach(otherUser => {
-          const otherPurchased = otherUser.purchasedProducts?.map(
-            p => p.productId?.toString()
-          ).filter(Boolean) || [];
-          
-          const otherViewed = otherUser.viewedProducts?.map(
-            v => v.productId?.toString()
-          ).filter(Boolean) || [];
+      usersWhoInteracted.forEach(otherUser => {
+        const otherPurchased = otherUser.purchasedProducts?.map(
+          p => p.productId?.toString()
+        ).filter(Boolean) || [];
 
-          // Weight purchases higher
-          otherPurchased.forEach(otherId => {
-            if (!recentInteractions.some(id => id?.toString() === otherId)) {
-              const current = coOccurrenceScores.get(otherId) || { score: 0, coViewCount: 0, coPurchaseCount: 0 };
-              coOccurrenceScores.set(otherId, {
-                score: current.score + 2,
-                coViewCount: current.coViewCount,
-                coPurchaseCount: current.coPurchaseCount + 1
-              });
-            }
-          });
+        const otherViewed = otherUser.viewedProducts?.map(
+          v => v.productId?.toString()
+        ).filter(Boolean) || [];
 
-          otherViewed.forEach(otherId => {
-            if (!recentInteractions.some(id => id?.toString() === otherId)) {
-              const current = coOccurrenceScores.get(otherId) || { score: 0, coViewCount: 0, coPurchaseCount: 0 };
-              coOccurrenceScores.set(otherId, {
-                score: current.score + 1,
-                coViewCount: current.coViewCount + 1,
-                coPurchaseCount: current.coPurchaseCount
-              });
-            }
-          });
+        const overlap = new Set(
+          [...otherPurchased, ...otherViewed].filter(id => recentIdStrings.has(id))
+        ).size || 1;
+
+        // Weight purchases higher
+        otherPurchased.forEach(otherId => {
+          if (!recentIdStrings.has(otherId)) {
+            const current = coOccurrenceScores.get(otherId) || { score: 0, coViewCount: 0, coPurchaseCount: 0 };
+            coOccurrenceScores.set(otherId, {
+              score: current.score + 2 * overlap,
+              coViewCount: current.coViewCount,
+              coPurchaseCount: current.coPurchaseCount + overlap
+            });
+          }
         });
-      }
+
+        otherViewed.forEach(otherId => {
+          if (!recentIdStrings.has(otherId)) {
+            const current = coOccurrenceScores.get(otherId) || { score: 0, coViewCount: 0, coPurchaseCount: 0 };
+            coOccurrenceScores.set(otherId, {
+              score: current.score + overlap,
+              coViewCount: current.coViewCount + overlap,
+              coPurchaseCount: current.coPurchaseCount
+            });
+          }
+        });
+      });
 
       // Sort and get top products
       const sortedProducts = Array.from(coOccurrenceScores.entries())

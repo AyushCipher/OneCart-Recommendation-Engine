@@ -31,7 +31,7 @@ This makes the project especially strong for portfolio review because it demonst
 | AI Interaction | Voice-assisted navigation with browser speech recognition and speech synthesis |
 | Media & Assets | Cloudinary-based image uploads and product media handling |
 | Notifications | Contact form email delivery via Nodemailer |
-| Security | Rate limiting on login/OTP routes, server-side order total recomputation, centralized error handling |
+| Security | Admin-only route enforcement (admin identity checked against `ADMIN_EMAIL`), JWT cookie auth, rate limiting on login/OTP/reset-password routes, OTP-gated password reset, Firebase ID-token verification for Google login, Razorpay HMAC signature verification, server-side order total recomputation, atomic coupon redemption, helmet headers, NoSQL-operator sanitization, zod input validation on auth/order routes, upload type/size limits |
 
 ## Project Architecture
 
@@ -214,6 +214,7 @@ npm run dev
 | `JWT_SECRET` | JWT signing secret |
 | `ADMIN_EMAIL` | Admin login email |
 | `ADMIN_PASSWORD` | Admin login password |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase service-account JSON (string) used to verify Google ID tokens; Google login returns 503 if unset |
 | `EMAIL` | Email account used for outbound mail |
 | `EMAIL_PASS` | Email app password for SMTP |
 | `CLOUDINARY_NAME` | Cloudinary cloud name |
@@ -431,3 +432,13 @@ Base backend URL: `http://localhost:8000`
 ## License
 
 This project is licensed under the ISC License.
+
+## Testing & Evaluation
+
+```bash
+cd backend
+npm test          # Vitest + supertest (uses mongodb-memory-server; first run downloads a MongoDB binary)
+npm run eval      # offline precision@k / hit-rate@k on a held-out split of tracked events (needs MONGODB_URL)
+```
+
+Known limitations: tracking endpoints still accept client-reported events for the authenticated user (they are not verified against real orders), and no recommendation-quality results are published here; run the eval script against your own data.

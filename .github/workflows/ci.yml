@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    paths: ['3. Main Projects/1. OneCart Recommendation System/**']
+  pull_request:
+    paths: ['3. Main Projects/1. OneCart Recommendation System/**']
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 3. Main Projects/1. OneCart Recommendation System/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: 3. Main Projects/1. OneCart Recommendation System/backend/package-lock.json
+      - run: npm ci
+      - run: npm test
